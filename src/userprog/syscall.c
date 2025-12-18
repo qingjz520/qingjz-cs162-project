@@ -26,4 +26,17 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
     printf("%s: exit(%d)\n", thread_current()->pcb->process_name, args[1]);
     process_exit();
   }
+
+  if (args[0] == SYS_WRITE) {
+    int fd = args[1];
+    const void* buffer = (const void*)args[2];
+    unsigned size = args[3];
+
+    if (fd == 1) {
+      putbuf(buffer, size);
+      f->eax = size;
+    } else {
+      f->eax = 0;
+    }
+  }
 }

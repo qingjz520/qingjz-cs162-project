@@ -62,8 +62,20 @@ pid_t process_execute(const char* file_name) {
     return TID_ERROR;
   strlcpy(fn_copy, file_name, PGSIZE);
 
+  char* thread_name_copy = palloc_get_page(0);
+  if (thread_name_copy == NULL) {
+    palloc_free_page(fn_copy);
+    return TID_ERROR;
+  }
+  strlcpy(thread_name_copy, file_name, PGSIZE);
+
+  char* save_ptr;
+  char* thread_name = strtok_r(thread_name_copy, " ", &save_ptr);
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create(file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create(thread_name, PRI_DEFAULT, start_process, fn_copy);
+  palloc_free_page(thread_name_copy);
+
   if (tid == TID_ERROR)
     palloc_free_page(fn_copy);
   return tid;
@@ -276,6 +288,24 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   bool success = false;
   int i;
 
+  char* argv[128];
+  int argc = 0;
+  char *token, *save_ptr;
+  char* fn_copy = palloc_get_page(0);
+  if (fn_copy == NULL)
+    return false;
+
+  strlcpy(fn_copy, file_name, PGSIZE);
+  for (token = strtok_r(fn_copy, " ", &save_ptr); token != NULL;
+       token = strtok_r(NULL, " ", &save_ptr)) {
+    argv[argc++] = token;
+    if (argc >= 128)
+      break;
+  }
+  if (argc > 0) {
+    file_name = argv[0];
+  }
+
   /* Allocate and activate page directory. */
   t->pcb->pagedir = pagedir_create();
   if (t->pcb->pagedir == NULL)
@@ -351,6 +381,38 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   if (!setup_stack(esp))
     goto done;
 
+  for (int i = argc - 1; i >= 0; i--) {
+    int len = strlen(argv[i]) + 1;
+    *esp = (char*)*esp - len;
+    memcpy(*esp, argv[i], len);
+    argv[i] = *esp; //给之后压入各单词的指针做准备
+  }
+
+  //对齐
+  int ptr_size = (1 + argc + 1 + 1) * 4;
+  while ((uintptr_t)*esp % 16 != (uintptr_t)ptr_size % 16) {
+    *esp = (char*)*esp - 1;
+    *(uint8_t*)*esp = 0;
+  }
+  //压入指针
+  *esp = (char*)*esp - 4;
+  *(char**)*esp = NULL; //argv[argc]==NULL压入
+
+  for (i = argc - 1; i >= 0; i--) {
+    *esp = (char*)*esp - 4;
+    *(char**)*esp = argv[i];
+  }
+
+  char** argv_base = (char**)*esp;
+  *esp = (char*)*esp - 4;
+  *(char***)*esp = argv_base; //**argv
+
+  *esp = (char*)*esp - 4;
+  *(int*)*esp = argc; //argc
+
+  *esp = (char*)*esp - 4;
+  *(char**)*esp = NULL;
+
   /* Start address. */
   *eip = (void (*)(void))ehdr.e_entry;
 
@@ -359,6 +421,14 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
 done:
   /* We arrive here whether the load is successful or not. */
   file_close(file);
+
+  if (fn_copy) {
+    palloc_free_page(fn_copy);
+  }
+
+  /* 在 load 函数末尾，eip 赋值之后 */
+  // printf("# DEBUG STACK #\n");
+  // hex_dump((uintptr_t)*esp, *esp, PHYS_BASE - (uintptr_t)*esp, true);
   return success;
 }
 
